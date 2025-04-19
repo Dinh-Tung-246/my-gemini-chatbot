@@ -33,7 +33,7 @@ if 'FIXED_API_KEY' in locals() and FIXED_API_KEY and FIXED_API_KEY != "YOUR_GOOG
     google_api_key = FIXED_API_KEY
     # Chỉ hiện cảnh báo một lần khi dùng key cố định
     if "fixed_key_warning_shown" not in st.session_state:
-        st.warning("Đang sử dụng API Key đặt cố định trong code (KHÔNG AN TOÀN!).", icon="⚠️")
+        # st.warning("Đang sử dụng API Key đặt cố định trong code (KHÔNG AN TOÀN!).", icon="⚠️")
         st.session_state.fixed_key_warning_shown = True # Đánh dấu đã hiển thị
 else:
     # Nếu không dùng key cố định, thử lấy từ biến môi trường
