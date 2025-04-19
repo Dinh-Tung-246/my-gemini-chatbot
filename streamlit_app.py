@@ -1,4 +1,4 @@
-# streamlit_app.py (Hoàn chỉnh - Sửa lỗi SecretNotFound & Tùy chọn Key cố định)
+# streamlit_app.py (Hoàn chỉnh - Sử dụng Biến môi trường / Secrets)
 
 import streamlit as st
 import os
@@ -11,7 +11,7 @@ from typing import Any, List, Optional, Sequence, AsyncGenerator
 from llama_index.core.callbacks import CallbackManager
 from llama_index.core.llms import CompletionResponse, CompletionResponseGen, LLMMetadata
 from llama_index.core.schema import BaseNode
-# from tqdm import tqdm # Không dùng trong streamlit cache
+# from tqdm import tqdm # Bỏ tqdm
 
 # --- Cấu hình trang Streamlit ---
 st.set_page_config(page_title="Chatbot Gemini", page_icon="♊", layout="centered")
@@ -19,42 +19,26 @@ st.title("♊ Chatbot LlamaIndex & Google Gemini")
 st.caption("Được xây dựng bằng LlamaIndex và Streamlit")
 
 # --- Google API Key Configuration ---
-# TÙY CHỌN 1: Đặt Key trực tiếp vào code (CHỈ DÙNG ĐỂ TEST LOCAL - KHÔNG AN TOÀN!)
-# Bỏ comment dòng dưới và thay YOUR_GOOGLE_API_KEY_HERE bằng key thật của bạn.
-# Nhớ comment hoặc xóa dòng này trước khi chia sẻ code hoặc deploy!
-FIXED_API_KEY = "AIzaSyC4eCRIkm0MIUkBtMkZmXSe-BOrk2qySnY" # Key cố định của bạn
 
-# TÙY CHỌN 2: Sử dụng biến môi trường hoặc Streamlit Secrets (AN TOÀN HƠN)
 google_api_key = None
-secrets_available = hasattr(st, 'secrets') # Kiểm tra xem st.secrets có tồn tại không
+secrets_available = hasattr(st, 'secrets')
 
-# ƯU TIÊN KEY CỐ ĐỊNH NẾU NÓ ĐƯỢC ĐỊNH NGHĨA VÀ KHÔNG PHẢI PLACEHOLDER
-if 'FIXED_API_KEY' in locals() and FIXED_API_KEY and FIXED_API_KEY != "YOUR_GOOGLE_API_KEY_HERE":
-    google_api_key = FIXED_API_KEY
-    # Chỉ hiện cảnh báo một lần khi dùng key cố định
-    if "fixed_key_warning_shown" not in st.session_state:
-        # st.warning("Đang sử dụng API Key đặt cố định trong code (KHÔNG AN TOÀN!).", icon="⚠️")
-        st.session_state.fixed_key_warning_shown = True # Đánh dấu đã hiển thị
-else:
-    # Nếu không dùng key cố định, thử lấy từ biến môi trường
-    google_api_key = os.environ.get("GOOGLE_API_KEY")
+# 1. Thử lấy từ biến môi trường trước (phù hợp khi chạy local)
+google_api_key = os.environ.get("GOOGLE_API_KEY")
+if google_api_key:
+    # st.info("Đã lấy API Key từ biến môi trường.", icon="🖥️") # Bỏ comment nếu muốn xác nhận
+    pass # Đã lấy được từ env var, không cần làm gì thêm
+elif secrets_available:
+    # 2. Nếu không có biến môi trường, thử lấy từ Streamlit Secrets (khi deploy)
+    google_api_key = st.secrets.get("GOOGLE_API_KEY", None) # Dùng get với default None
     if google_api_key:
-        # st.info("Đã lấy API Key từ biến môi trường.", icon="🖥️")
-        pass # Đã lấy được từ env var, không cần làm gì thêm
-    elif secrets_available:
-        # Nếu không có env var, mới thử lấy từ secrets (dùng get với default)
-        google_api_key = st.secrets.get("GOOGLE_API_KEY", None)
-        if google_api_key:
-            st.info("Đã lấy API Key từ Streamlit Secrets.", icon="🔒")
+        st.info("Đã lấy API Key từ Streamlit Secrets.", icon="🔒") # Thông báo khi lấy từ secrets
 
-# Nếu sau tất cả các bước trên vẫn không có key, cho phép nhập
+# Nếu sau cả hai bước trên vẫn không có key
 if not google_api_key:
-    st.warning("Không tìm thấy GOOGLE_API_KEY.")
-    google_api_key = st.text_input("Nhập Google API Key:", type="password", key="api_key_input")
-
-# Kiểm tra lần cuối
-if not google_api_key:
-    st.error("Vui lòng cung cấp Google API Key.", icon="🚨")
+    st.error("Vui lòng cung cấp Google API Key qua biến môi trường (khi chạy local) hoặc cấu hình Secrets (khi deploy).", icon="🚨")
+    # Không cho nhập trực tiếp nữa để đảm bảo an toàn khi deploy
+    # google_api_key = st.text_input("Nhập Google API Key:", type="password", key="api_key_input")
     st.stop() # Dừng ứng dụng nếu không có key
 
 # --- Cấu hình thư viện Google ---
@@ -69,16 +53,13 @@ except Exception as e:
 def load_available_models():
     llm_models, embed_models = [], []
     try:
-        # st.info("Đang kiểm tra models khả dụng...") # Bỏ bớt thông báo
         for m in genai.list_models():
             if 'generateContent' in m.supported_generation_methods: llm_models.append(m.name)
             if 'embedContent' in m.supported_generation_methods: embed_models.append(m.name)
-        # st.success("Kiểm tra model hoàn tất.")
     except Exception as e:
         st.warning(f"Không thể liệt kê models: {e}. Dùng mặc định.")
         llm_models, embed_models = ["models/gemini-1.5-flash-latest"], ["models/embedding-001"]
-    # In ra console để debug (không hiển thị trên UI)
-    print(f"Available LLM models: {llm_models}")
+    print(f"Available LLM models: {llm_models}") # Vẫn in ra console để debug
     print(f"Available Embedding models: {embed_models}")
     return llm_models, embed_models
 
@@ -93,7 +74,7 @@ class MyGeminiLLM(CustomLLM):
         self.model_name = model_name
         try:
             if self.model_name not in available_llm_models:
-                 print(f"Warning: Model '{self.model_name}' not in available LLMs {available_llm_models}. Trying fallback.")
+                 print(f"Warning: Model '{self.model_name}' not in available LLMs. Trying fallback.")
                  if available_llm_models: self.model_name = available_llm_models[0]; print(f"Switched to: {self.model_name}")
                  else: raise ValueError("No fallback LLM available.")
             self._model = genai.GenerativeModel(self.model_name)
@@ -149,7 +130,6 @@ class MyGeminiEmbedding(BaseEmbedding):
         except Exception as e: print(f"Error getting embedding: {e}"); raise
     def _get_text_embedding(self, text: str) -> List[float]: return self._get_embedding(text, "RETRIEVAL_QUERY")
     def _get_text_embedding_batch(self, texts: List[str], show_progress: bool = False, **kwargs: Any) -> List[List[float]]:
-        # Bỏ tqdm để tránh lỗi với cache_resource
         return [self._get_embedding(text, "RETRIEVAL_DOCUMENT") for text in texts]
     def _get_query_embedding(self, query: str) -> List[float]: return self._get_embedding(query, "RETRIEVAL_QUERY")
     async def _aget_text_embedding(self, text: str) -> List[float]: return self._get_embedding(text, "RETRIEVAL_QUERY")
@@ -157,14 +137,12 @@ class MyGeminiEmbedding(BaseEmbedding):
     async def _aget_query_embedding(self, query: str) -> List[float]: return self._get_embedding(query, "RETRIEVAL_QUERY")
 
 # --- Hàm Cache để Khởi tạo Models và Index ---
-@st.cache_resource # Cache để không khởi tạo lại LLM/Embed/Index mỗi lần rerun
+@st.cache_resource
 def load_resources():
-    """Khởi tạo LLM, Embed Model, nạp dữ liệu và tạo Index."""
-    print("--- Loading Resources (Cache Miss or First Run) ---") # In ra để biết khi nào cache chạy
-    # Configure Settings
+    print("--- Loading Resources (Cache Miss or First Run) ---")
     target_llm_model, target_embed_model = None, None
     preferred_llms = ["models/gemini-1.5-flash-latest", "models/gemini-1.5-pro-latest", "models/gemini-pro"]
-    preferred_embeds = ["models/embedding-001", "models/text-embedding-004"] # Thêm model mới của Google nếu có
+    preferred_embeds = ["models/embedding-001", "models/text-embedding-004"]
     for pref in preferred_llms:
         if pref in available_llm_models: target_llm_model = pref; break
     if not target_llm_model and available_llm_models: target_llm_model = available_llm_models[0]
@@ -180,7 +158,6 @@ def load_resources():
     Settings.llm = llm; Settings.embed_model = embed_model
     print("LlamaIndex Settings configured.")
 
-    # Load Data and Create Index
     DATA_DIR = "data"; index = None; documents = []
     if os.path.exists(DATA_DIR) and os.listdir(DATA_DIR):
         print(f"Loading data from '{DATA_DIR}'...")
@@ -188,31 +165,28 @@ def load_resources():
             documents = SimpleDirectoryReader(DATA_DIR).load_data()
             if documents:
                 print(f"Loaded {len(documents)} documents. Creating index...")
+                # Bỏ show_progress trong cache_resource
                 index = VectorStoreIndex.from_documents(documents)
                 print("Index created.")
             else: print(f"No documents found in '{DATA_DIR}'.")
         except Exception as e: print(f"Error loading/indexing data: {e}")
     else: print(f"Directory '{DATA_DIR}' is empty or not found. Skipping RAG setup.")
 
-    # Create Query Engine if index exists
     query_engine = index.as_query_engine() if index else None
     if query_engine: print("Query engine created.")
     else: print("Query engine not created (no index).")
-
     print("--- Finished Loading Resources ---")
-    return query_engine, Settings.llm # Trả về engine và llm để dùng
+    return query_engine, Settings.llm
 
 # --- Khởi tạo và Lấy tài nguyên từ Cache ---
 try:
     query_engine, llm_global = load_resources()
-except Exception as e:
-    st.error(f"Lỗi nghiêm trọng khi tải tài nguyên: {e}")
-    st.stop()
+except Exception as e: st.error(f"Lỗi tải tài nguyên: {e}"); st.stop()
 
 # --- Giao diện Chat ---
 st.divider()
 if "messages" not in st.session_state:
-    welcome = "Hỏi về dữ liệu trong 'data' nhé." if query_engine else "Trò chuyện với Gemini nhé (không có dữ liệu nền)."
+    welcome = "Hỏi về dữ liệu trong 'data' nhé." if query_engine else "Trò chuyện với Gemini nhé."
     st.session_state.messages = [{"role": "assistant", "content": welcome}]
 
 for msg in st.session_state.messages:
@@ -227,15 +201,14 @@ if prompt := st.chat_input("Nhập câu hỏi..."):
             if query_engine:
                 response = query_engine.query(prompt)
                 full_response = str(response) if response is not None else "[No RAG response]"
-                message_placeholder.markdown(full_response)
-            elif llm_global: # Sử dụng llm đã lấy từ cache
+            elif llm_global:
                  st.info("Hỏi trực tiếp LLM...", icon="💬")
                  response = llm_global.complete(prompt)
                  full_response = response.text
-                 message_placeholder.markdown(full_response)
-            else: full_response = "Lỗi: Không có Query Engine/LLM."; message_placeholder.error(full_response)
+            else: full_response = "Lỗi: Không có Query Engine/LLM."
+            message_placeholder.markdown(full_response) # Cập nhật câu trả lời
             st.session_state.messages.append({"role": "assistant", "content": full_response})
         except Exception as e:
             error_message = f"Lỗi: {e}"; st.error(error_message)
             st.session_state.messages.append({"role": "assistant", "content": error_message})
-            message_placeholder.markdown(error_message)
+            message_placeholder.markdown(error_message) # Hiển thị lỗi
