@@ -1,70 +1,95 @@
+# streamlit_app.py
 import streamlit as st
-import os
 import google.generativeai as genai
 
-# --- Cấu hình trang ---
-st.set_page_config(page_title="Chatbot Gemini", page_icon="♊")
-st.title("♊ Flash Chatbot V1.0.0")
-st.caption("Dùng Google Gemini API để trả lời trực tiếp")
+# Import các module đã tách
+from config import load_api_key, configure_gemini
+from ui import render_sidebar, display_messages
+from chatbot_logic import load_gemini_model, initialize_chat_session, generate_response_stream, get_blocked_reason
 
-# --- Lấy API Key ---
-google_api_key = os.environ.get("GOOGLE_API_KEY") or (st.secrets.get("GOOGLE_API_KEY") if hasattr(st, 'secrets') else None)
-if not google_api_key:
-    st.error("⚠️ Chưa có API Key. Hãy thêm vào biến môi trường hoặc Streamlit secrets.")
-    st.stop()
+# --- 1. Cấu hình trang & API Key ---
+st.set_page_config(page_title="Modular Chatbot V1.1", page_icon="🧩", layout="wide")
+st.title("🧩 Modular Gemini Chatbot")
+st.caption("Chatbot được tổ chức thành nhiều file")
 
-# --- Cấu hình thư viện Google ---
-try:
-    genai.configure(api_key=google_api_key)
-except Exception as e:
-    st.error(f"Lỗi cấu hình Gemini: {e}")
-    st.stop()
+api_key = load_api_key()
+configure_gemini(api_key)
 
-# --- Load model Gemini ---
-@st.cache_resource
-def load_model():
-    model_name = "models/gemini-1.5-flash-latest"
-    model = genai.GenerativeModel(model_name)
-    return model
+# --- 2. Render Sidebar & Lấy Cấu hình ---
+render_sidebar() # Hàm này cập nhật session_state
 
-gemini_model = load_model()
+# Lấy các giá trị cấu hình từ session_state (do sidebar cập nhật)
+selected_model_name = st.session_state.selected_model
+temperature = st.session_state.temperature
+max_tokens = st.session_state.max_tokens
 
-# --- Giao diện Chat ---
-st.divider()
-if "messages" not in st.session_state:
-    st.session_state.messages = [{"role": "assistant", "content": "Xin chào! Bạn muốn hỏi gì về AI, công nghệ hay kiến thức tổng quát?"}]
+# --- 3. Load Model & Khởi tạo Chat ---
+# Model được cache, chỉ load lại nếu selected_model_name thay đổi
+model = load_gemini_model(selected_model_name)
 
-for msg in st.session_state.messages:
-    with st.chat_message(msg["role"]):
-        st.markdown(msg["content"])
+# Khởi tạo chat session, hàm này sẽ kiểm tra và tạo mới nếu cần
+chat = initialize_chat_session(model)
 
-if prompt := st.chat_input("Nhập câu hỏi..."):
+# --- 4. Hiển thị Lịch sử Chat ---
+display_messages()
+
+# --- 5. Xử lý Input & Gọi API ---
+if prompt := st.chat_input("💬 Nhập câu hỏi của bạn..."):
+    # Thêm tin nhắn người dùng vào state và hiển thị
     st.session_state.messages.append({"role": "user", "content": prompt})
-    with st.chat_message("user"):
+    with st.chat_message("user", avatar="👤"):
         st.markdown(prompt)
-    with st.chat_message("assistant"):
-        msg_placeholder = st.empty()
-        msg_placeholder.markdown("🤖 Đang suy nghĩ...")
 
-        try:
-            safety_settings = [{"category": c, "threshold": "BLOCK_NONE"} for c in [
-                "HARM_CATEGORY_HARASSMENT",
-                "HARM_CATEGORY_HATE_SPEECH",
-                "HARM_CATEGORY_SEXUALLY_EXPLICIT",
-                "HARM_CATEGORY_DANGEROUS_CONTENT",
-            ]]
+    # Chuẩn bị gọi API
+    generation_config = genai.types.GenerationConfig(
+        temperature=temperature,
+        max_output_tokens=max_tokens
+    )
+    safety_settings = [
+        {"category": c, "threshold": "BLOCK_NONE"} for c in [
+            "HARM_CATEGORY_HARASSMENT", "HARM_CATEGORY_HATE_SPEECH",
+            "HARM_CATEGORY_SEXUALLY_EXPLICIT", "HARM_CATEGORY_DANGEROUS_CONTENT",
+        ]
+    ]
 
-            response = gemini_model.generate_content(prompt, safety_settings=safety_settings)
-            if hasattr(response, 'text'):
-                answer = response.text
-            elif hasattr(response, 'candidates') and response.candidates:
-                answer = "".join(part.text for part in response.candidates[0].content.parts if hasattr(part, 'text'))
-            else:
-                answer = "❌ Không thể tạo câu trả lời."
+    # Hiển thị placeholder và gọi hàm tạo response stream
+    with st.chat_message("assistant", avatar="♊"):
+        message_placeholder = st.empty()
+        message_placeholder.markdown("♊ Đang suy nghĩ...")
+        full_response = ""
+        assistant_response_error = False # Cờ để kiểm tra lỗi trong stream
 
-            msg_placeholder.markdown(answer)
-            st.session_state.messages.append({"role": "assistant", "content": answer})
-        except Exception as e:
-            error_msg = f"⚠️ Lỗi gọi API: {e}"
-            msg_placeholder.markdown(error_msg)
-            st.session_state.messages.append({"role": "assistant", "content": error_msg})
+        # Sử dụng generator từ chatbot_logic
+        response_generator = generate_response_stream(
+            chat, prompt, generation_config, safety_settings
+        )
+
+        for chunk in response_generator:
+            if isinstance(chunk, str) and chunk.startswith("⚠️ **Lỗi:**"): # Kiểm tra nếu chunk là thông báo lỗi từ generator
+                full_response = chunk # Ghi đè bằng thông báo lỗi
+                assistant_response_error = True
+                break # Dừng xử lý stream nếu có lỗi
+            elif hasattr(chunk, 'text') and chunk.text:
+                full_response += chunk.text
+                message_placeholder.markdown(full_response + "▌")
+            # Có thể thêm xử lý cho các loại chunk khác nếu cần (ví dụ: function calls)
+
+        # Xử lý sau khi stream kết thúc hoặc bị lỗi
+        if not full_response and not assistant_response_error: # Stream xong nhưng không có text VÀ không phải lỗi từ generator
+            block_reason = get_blocked_reason(chat)
+            full_response = f"⚠️ Rất tiếc, không thể tạo phản hồi. Lý do có thể là: **{block_reason}**."
+            assistant_response_error = True # Đánh dấu là có vấn đề
+
+        # Hiển thị kết quả cuối cùng
+        message_placeholder.markdown(full_response)
+
+        # Chỉ thêm vào lịch sử nếu không có lỗi VÀ có nội dung
+        if not assistant_response_error and full_response:
+            st.session_state.messages.append({"role": "model", "content": full_response})
+        elif assistant_response_error:
+             # Nếu có lỗi, vẫn thêm tin nhắn lỗi vào lịch sử để người dùng biết
+             # Kiểm tra xem tin nhắn cuối có phải user không
+             if st.session_state.messages[-1]["role"] == "user":
+                 st.session_state.messages.append({"role": "model", "content": full_response})
+             else: # Nếu tin nhắn cuối là lỗi cũ, cập nhật nó
+                 st.session_state.messages[-1] = {"role": "model", "content": full_response}
